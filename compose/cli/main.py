@@ -26,6 +26,7 @@ from ..config.serialize import serialize_config
 from ..config.types import VolumeSpec
 from ..const import IS_WINDOWS_PLATFORM
 from ..errors import StreamParseError
+from ..metrics.decorator import metrics
 from ..progress_stream import StreamOutputError
 from ..project import get_image_digests
 from ..project import MissingDigests
@@ -63,34 +64,43 @@ console_handler = logging.StreamHandler(sys.stderr)
 
 def main():
     signals.ignore_sigpipe()
+    command = 'help'
     try:
-        command = dispatch()
-        command()
+        print("===============================!")
+        command_func, command = dispatch()
+        print("=============================== command!", command)
+        command_func()
     except (KeyboardInterrupt, signals.ShutdownException):
-        log.error("Aborting.")
-        sys.exit(1)
+        exit_with_metrics(command, "Aborting.")
     except (UserError, NoSuchService, ConfigurationError,
             ProjectError, OperationFailedError) as e:
-        log.error(e.msg)
-        sys.exit(1)
+        exit_with_metrics(command, e.msg)
     except BuildError as e:
         reason = ""
         if e.reason:
             reason = " : " + e.reason
-        log.error("Service '{}' failed to build{}".format(e.service.name, reason))
-        sys.exit(1)
+        exit_with_metrics(command, "Service '{}' failed to build{}".format(e.service.name, reason))
     except StreamOutputError as e:
-        log.error(e)
-        sys.exit(1)
+        exit_with_metrics(command, e)
     except NeedsBuildError as e:
-        log.error("Service '{}' needs to be built, but --no-build was passed.".format(e.service.name))
-        sys.exit(1)
+        exit_with_metrics(command, "Service '{}' needs to be built, but --no-build was passed.".format(e.service.name))
     except NoSuchCommand as e:
         commands = "\n".join(parse_doc_section("commands:", getdoc(e.supercommand)))
-        log.error("No such command: %s\n\n%s", e.command, commands)
-        sys.exit(1)
+        exit_with_metrics(command, "No such command: {}}\n\n{}}".format(e.command, commands))
     except (errors.ConnectionError, StreamParseError):
-        sys.exit(1)
+        exit_with_metrics(command)
+    except SystemExit as e:
+        exit_with_metrics(command, log_msg=e, exit_code=0)
+
+
+def exit_with_metrics(command, log_msg=None, exit_code=1):
+    if log_msg:
+        # log.error(log_msg)
+        if not exit_code:
+            print(log_msg)
+        else:
+            log.error(log_msg)
+    sys.exit(exit_code)
 
 
 def dispatch():
@@ -107,10 +117,12 @@ def dispatch():
     setup_parallel_logger(set_no_color_if_clicolor(options.get('--no-ansi')))
     if options.get('--no-ansi'):
         command_options['--no-color'] = True
-    return functools.partial(perform_command, options, handler, command_options)
+    return functools.partial(perform_command, options, handler, command_options), options['COMMAND']
 
 
 def perform_command(options, handler, command_options):
+    print(options)
+
     if options['COMMAND'] in ('help', 'version'):
         # Skip looking up the compose file.
         handler(command_options)
@@ -304,6 +316,7 @@ class TopLevelCommand:
             progress=options.get('--progress'),
         )
 
+    @metrics()
     def config(self, options):
         """
         Validate and view the Compose file.
